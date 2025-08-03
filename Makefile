@@ -1,15 +1,23 @@
-IMAGE_NAME=curso_data_engineer
+.PHONY: start stop build run clean restart
+.DEFAULT_GOAL := help
 
-build:
-	docker build -t $(IMAGE_NAME) .
+help: ## Show this help message
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-run:
-	docker run --rm -it $(IMAGE_NAME)
+start: ## Start all services in detached mode
+	docker compose up -d
 
-shell:
-	docker run --rm -it $(IMAGE_NAME) /bin/bash
+stop: ## Stop all services
+	docker compose down
 
-rebuild: clean build
+build: ## Build or rebuild services (no cache)
+	docker compose build --no-cache
 
-clean:
-	docker rmi $(IMAGE_NAME) || true
+run: ## Run main.py inside python service
+	docker compose exec python python app/main.py
+
+clean: ## Stop and remove containers, networks, and volumes
+	docker compose down -v --remove-orphans
+
+restart: ## Restart all services
+	docker compose down && docker compose up -d

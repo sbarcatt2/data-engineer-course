@@ -1,3 +1,0 @@
-requests
-flask
-# o cualquier otra librería que uses
