@@ -1,6 +1,0 @@
-services:
-  python:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: tail -f /dev/null  # Mantiene el contenedor corriendo sin ejecutar nada
