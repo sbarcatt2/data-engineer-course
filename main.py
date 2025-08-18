@@ -1,120 +1,17 @@
-import sqlite3
-import pandas as pd
 from datetime import datetime
-import boto3
-import os
-import psycopg2
 
-from dotenv import load_dotenv
-load_dotenv() # busca .env en el directorio actual
+#Conexion a postgres
+from db.postgres import conectar_db
 
-print(os.getenv('PG_HOST'))
+#Funciones de extract, transform y load
+from src.extract import extraer_datos
+from src.transform import transformar_datos
+from src.load import guardar_csv, subir_a_s3
 
-def conectar_db():
-    """
-    Establece conexión con la base de datos PostgreSQL
-    """
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv('PG_HOST'),
-            database=os.getenv('PG_DB'),
-            user=os.getenv('PG_USER'),
-            password=os.getenv('PG_PASSWORD'),
-            port=5432,
-            sslmode='require'
-        )
-        print("Conexión exitosa a la base de datos PostgreSQL")
-        return conn
-    except psycopg2.Error as e:
-        print(f"Error al conectar a la base de datos PostgreSQL: {e}")
-        return None
+import logging
+logging.basicConfig(level=logging.INFO)
 
-def extraer_datos(conn):
-    """
-    Extrae todos los datos de la tabla accounts desde PostgreSQL
-    """
-    try:
-        # Usamos pandas read_sql_query que funciona con conexiones psycopg2
-        query = "SELECT * FROM accounts"
-        df = pd.read_sql_query(query, conn)
-        print(f"\nDatos extraídos: {len(df)} registros")
-        return df
-    except Exception as e:
-        print(f"Error al extraer datos: {e}")
-        return None
 
-def transformar_datos(df_extraido):
-    """
-    Transforma los datos del DataFrame extraído usando SQL en una DB SQLite en memoria
-    para generar un reporte de cuentas creadas por mes
-    """
-    try:
-        # Crear una conexión a una base de datos SQLite en memoria
-        conn_sqlite = sqlite3.connect(':memory:')
-        
-        # Cargar el DataFrame en una tabla temporal en la DB en memoria
-        # Asegurarse de que el nombre de la tabla coincida con el usado en la query SQL
-        df_extraido.to_sql('accounts', conn_sqlite, index=False, if_exists='replace')
-        print("DataFrame cargado en DB SQLite en memoria.")
-        
-        query = """
-        SELECT 
-            strftime('%Y', created_at) as año,
-            strftime('%m', created_at) as mes,
-            COUNT(*) as cantidad_cuentas
-        FROM accounts
-        GROUP BY año, mes
-        ORDER BY año, mes
-        """
-        
-        df_transformado = pd.read_sql_query(query, conn_sqlite)
-        print("\nReporte generado:")
-        print(df_transformado)
-        
-        # Cerrar la conexión a la DB en memoria
-        conn_sqlite.close()
-        
-        return df_transformado
-    except Exception as e:
-        print(f"Error en la transformación: {e}")
-        return None
-
-def guardar_csv(df, nombre_archivo):
-    """
-    Guarda los datos transformados en un archivo CSV localmente
-    """
-    try:
-        df.to_csv(nombre_archivo, index=False)
-        print(f"\nArchivo guardado exitosamente: {nombre_archivo}")
-        return nombre_archivo
-    except Exception as e:
-        print(f"Error al guardar el archivo: {e}")
-        return None
-
-def subir_a_s3(nombre_archivo_local):
-    """
-    Sube el archivo CSV a S3
-    """
-    try:
-        # Crear cliente de S3
-        session = boto3.Session(profile_name='bruno_especializacion')
-        s3_client = session.client('s3', region_name='us-west-2')
-        
-        # Subir archivo
-        s3_client.upload_file(
-            nombre_archivo_local,
-            BUCKET_NAME,
-            f"reportes/{nombre_archivo_local}"  # Guardamos en una carpeta 'reportes'
-        )
-        
-        print(f"\nArchivo subido exitosamente a S3: s3://{BUCKET_NAME}/reportes/{nombre_archivo_local}")
-        
-        # Opcional: eliminar archivo local después de subirlo
-        os.remove(nombre_archivo_local)
-        print(f"Archivo local eliminado: {nombre_archivo_local}")
-        
-    except Exception as e:
-        print(f"Error al subir archivo a S3: {e}")
 
 def main():
     # Conectar a la base de datos PostgreSQL
@@ -123,23 +20,46 @@ def main():
         return
 
     try:
+        logging.info("Comienza extraccion de datos.")
         # Extraer datos
-        df_extraido = extraer_datos(conn_pg)
-        if df_extraido is None:
+        account_columns = ['account_id', 'account_name', 'created_at']
+        df_accounts = extraer_datos(conn_pg, 'accounts', account_columns)
+        if df_accounts is None:
             return
-            
+
+        account_subscription_columns = ['account_subscription_id', 'account_id', 'subscription_id', 'start_date', 'end_date']
+        df_accounts_subscription = extraer_datos(conn_pg, 'accounts_subscription', account_subscription_columns)
+        if df_accounts_subscription is None:
+            return
+
+        subscription_columns = ['subscription_id', 'subscription_name']
+        df_subscription = extraer_datos(conn_pg, 'subscriptions', subscription_columns)
+        if df_subscription is None:
+            return
+        logging.info("Extraccion de datos completada.")
+        #imprimir 5 registros de cada df
+        print(df_accounts.head())
+        print(df_accounts_subscription.head())
+        print(df_subscription.head())
+
         # Transformar datos (pasando el DataFrame extraído)
-        df_transformado = transformar_datos(df_extraido) # Pasamos el DataFrame aquí
+        logging.info("Comienza transformacion de datos.")
+        df_transformado = transformar_datos(df_accounts, df_accounts_subscription, df_subscription) # Pasamos el DataFrame aquí
         if df_transformado is None:
             return
+        logging.info("Transformacion de datos completada.")
         
         # Guardar resultados localmente
+        logging.info("Comienza guardado de resultados.")
         nombre_archivo = f"reporte_cuentas_por_mes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         archivo_guardado = guardar_csv(df_transformado, nombre_archivo)
         
         if archivo_guardado:
+            logging.info("Guardado de resultados completado.")
             # Subir a S3
+            logging.info("Comienza subida a S3.")
             subir_a_s3(archivo_guardado)
+            logging.info("Subida a S3 completada.")
             
     finally:
         conn_pg.close()
